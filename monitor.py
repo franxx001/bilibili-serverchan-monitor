@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 UID_LIST = [u.strip() for u in os.getenv("BILI_UID", "").split(",") if u.strip()]
 NAME_LIST = [n.strip() for n in os.getenv("BILI_UP_NAME", "").split(",") if n.strip()]
 SENDKEY = os.getenv("SERVERCHAN_SENDKEY", "")
+BILI_COOKIE = os.getenv("BILI_COOKIE", "")
 REQUEST_INTERVAL = 2
 STATE_FILE = "data/state.json"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -37,6 +38,8 @@ def fetch(url, referer=None, timeout=15):
     headers = {}
     if referer:
         headers["Referer"] = referer
+    if BILI_COOKIE:
+        headers["Cookie"] = BILI_COOKIE
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -50,13 +53,11 @@ def fetch(url, referer=None, timeout=15):
 
 
 def init_session():
-    """访问 B站首页获取 Cookie"""
-    log.info("初始化 B站 Session...")
-    data = fetch(BILI_HOME, timeout=15)
-    if data is None:
-        c = [f"{c.name}={c.value}" for c in cookie_jar]
-        log.info(f"Cookie 已获取: {c}")
-    return True
+    """初始化（不需要访问首页，直接用用户 Cookie）"""
+    if BILI_COOKIE:
+        log.info("使用用户 Cookie（包含 %d 个字段）", len(BILI_COOKIE.split(";")))
+    else:
+        log.warning("未设置 BILI_COOKIE，API 可能返回 412")
 
 
 _wbi_mixin = None
