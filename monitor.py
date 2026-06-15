@@ -1,5 +1,5 @@
 """
-B站 UP 主动态监控 → Server酱 Turbo 推送
+B站 UP 主动态监控 → Server酱³ 推送
 GitHub Actions 定时运行，免服务器
 """
 
@@ -18,7 +18,7 @@ UID_LIST = [u.strip() for u in os.getenv("BILI_UID", "").split(",") if u.strip()
 # UP 主名称，多个用英文逗号分隔（可选，留空自动获取）
 NAME_LIST = [n.strip() for n in os.getenv("BILI_UP_NAME", "").split(",") if n.strip()]
 
-# Server酱 Turbo SendKey（从 GitHub Secrets 读取）
+# Server酱³ SendKey（从 GitHub Secrets 读取，形如 sctp12345t...）
 SENDKEY = os.getenv("SERVERCHAN_SENDKEY", "")
 
 # 请求间隔（秒），防止被 B 站限流
@@ -260,32 +260,43 @@ def save_state(state):
 
 
 def send_serverchan(title, content):
-    """通过 Server酱 Turbo 推送消息"""
+    """通过 Server酱³ 推送消息"""
     if not SENDKEY:
         print("未设置 SERVERCHAN_SENDKEY，跳过推送")
         return False
 
-    url = f"https://sctapi.ftqq.com/{SENDKEY}.send"
-    data = json.dumps({
+    # Server酱³ SendKey 格式: sctp<uid>t... ，自动提取 uid
+    import re
+    match = re.match(r"^sctp(\d+)t", SENDKEY)
+    if not match:
+        print("SendKey 格式不正确，应为 Server酱³ 的 SendKey（形如 sctp...t...）")
+        return False
+
+    uid = match.group(1)
+    url = f"https://{uid}.push.ft07.com/send/{SENDKEY}.send"
+
+    # GET 方式，参数放 query string
+    params = urllib.parse.urlencode({
         "title": title,
         "desp": content,
-    }).encode("utf-8")
+    })
+    url = url + "?" + params
 
-    req = urllib.request.Request(url, data=data, headers={
-        "Content-Type": "application/json",
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "BiliServerChan/1.0",
     })
 
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read().decode("utf-8"))
         if result.get("code") == 0:
-            print(f"✅ Server酱推送成功: {title}")
+            print(f"✅ Server酱³ 推送成功: {title}")
             return True
         else:
-            print(f"❌ Server酱推送失败: {result.get('message', '未知错误')}")
+            print(f"❌ Server酱³ 推送失败: {result.get('message', '未知错误')}")
             return False
     except Exception as e:
-        print(f"❌ Server酱推送异常: {e}")
+        print(f"❌ Server酱³ 推送异常: {e}")
         return False
 
 
@@ -321,7 +332,7 @@ def get_user_name_cache(uid, idx):
 
 
 def main():
-    print(f"=== B站动态监控 (Server酱 Turbo) ===")
+    print(f"=== B站动态监控 (Server酱³) ===")
 
     if not UID_LIST:
         print("❌ 未设置 BILI_UID，请在 GitHub Secrets 中配置（多个用英文逗号分隔）")

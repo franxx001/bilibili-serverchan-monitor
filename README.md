@@ -1,11 +1,12 @@
-# B站动态监控 → Server酱 Turbo 推送
+# B站动态监控 → Server酱³ 推送
 
-基于 **GitHub Actions** 的 B站 UP 主动态监控系统，通过 **Server酱 Turbo** 推送到微信。零服务器、纯 Python 标准库、开箱即用。
+基于 **GitHub Actions** 的 B站 UP 主动态监控系统，通过 **Server酱³** 推送到手机 APP。零服务器、纯 Python 标准库、开箱即用。
 
 ## 功能
 
-- 🔍 通过 B站 API（含 WBI 签名）监控指定 UID 的空间动态
-- 📲 通过 Server酱 Turbo 实时推送到**微信**
+- 🔍 通过 B站 API（含 WBI 签名）监控多个 UID 的空间动态
+- 📲 通过 Server酱³ 实时推送到**手机 APP**（支持 Markdown）
+- 👥 支持多 UID，逗号分隔即可
 - 📦 零依赖，仅用 Python 标准库
 - 💾 状态持久化到 Git，避免重复推送
 - ⏰ GitHub Actions 定时运行（可自定义间隔）
@@ -13,12 +14,12 @@
 
 ## 快速开始（3 步）
 
-### 第 1 步：获取 Server酱 Turbo SendKey
+### 第 1 步：获取 Server酱³ SendKey
 
-1. 打开 [Server酱 Turbo](https://sct.ftqq.com/)
-2. 微信扫码登录
-3. 点击「SendKey」→ 复制你的 SendKey
-4. 微信关注「方糖」公众号（接收推送）
+1. 打开 [Server酱³](https://sc3.ft07.com/)
+2. 注册并登录
+3. 点击「SendKey」→ 复制 SendKey（形如 `sctp12345t...`）
+4. 在手机安装 Server酱³ APP（[安装指南](https://doc.sc3.ft07.com/serverchan3/app/install)）
 
 ### 第 2 步：Fork 并配置
 
