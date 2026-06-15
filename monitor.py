@@ -152,17 +152,17 @@ def extract_dynamic(item):
 
     # WORD 类型 desc.text 可能为空，从 opus.summary.text 补充
     if not text:
-        opus = major.get("opus", {})
-        text = opus.get("summary", {}).get("text", "")
+        opus = major.get("opus") or {}
+        text = (opus.get("summary") or {}).get("text", "")
 
     pics = []
     if dyn_type == "DYNAMIC_TYPE_DRAW":
-        for it in major.get("draw", {}).get("items", []):
+        for it in (major.get("draw") or {}).get("items", []):
             s = it.get("src", "")
             if s:
                 pics.append(s)
     elif dyn_type == "DYNAMIC_TYPE_WORD":
-        for p in major.get("opus", {}).get("pics", []):
+        for p in (major.get("opus") or {}).get("pics", []):
             u = p.get("url", "")
             if u:
                 pics.append(u)
