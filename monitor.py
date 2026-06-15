@@ -11,11 +11,11 @@ import urllib.request
 import urllib.parse
 
 # ==================== 配置 ====================
-# UP 主 UID（修改这里）
-UID = "3546768189622669"
+# UP 主 UID（从 GitHub Secrets 读取）
+UID = os.getenv("BILI_UID", "")
 
-# UP 主名称（可选，仅用于推送标题）
-UP_NAME = ""
+# UP 主名称（可选，留空自动从 B站 API 获取）
+UP_NAME = os.getenv("BILI_UP_NAME", "")
 
 # Server酱 Turbo SendKey（从 GitHub Secrets 读取）
 SENDKEY = os.getenv("SERVERCHAN_SENDKEY", "")

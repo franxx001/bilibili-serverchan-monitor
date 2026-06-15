@@ -27,6 +27,8 @@ jobs:
       - name: 运行监控
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          BILI_UID: ${{ secrets.BILI_UID }}
+          BILI_UP_NAME: ${{ secrets.BILI_UP_NAME }}
         run: python monitor.py
 
       - name: 提交状态文件
