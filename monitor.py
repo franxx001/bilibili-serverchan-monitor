@@ -1,187 +1,181 @@
 """
-B站 UP 主动态监控 -> Server酱3 推送
+B站 UP 主动态监控 -> Server酱3 推送 (BiliDingBot 方案)
 GitHub Actions 定时运行，免服务器
 """
 
-import json
-import os
-import time
-import hashlib
-import urllib.request
-import urllib.parse
-import urllib.error
+import json, os, time, hashlib, urllib.parse, logging, sys
+import http.cookiejar, urllib.request, urllib.error
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+log = logging.getLogger(__name__)
 
 # ==================== 配置 ====================
 UID_LIST = [u.strip() for u in os.getenv("BILI_UID", "").split(",") if u.strip()]
 NAME_LIST = [n.strip() for n in os.getenv("BILI_UP_NAME", "").split(",") if n.strip()]
 SENDKEY = os.getenv("SERVERCHAN_SENDKEY", "")
-BILI_COOKIE = os.getenv("BILI_COOKIE", "buvid3=infoc;")  # 填写你的 B站 Cookie 能提高成功率
 REQUEST_INTERVAL = 2
 STATE_FILE = "data/state.json"
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
-)
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-MIXIN_TABLE = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
-               27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
-               37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
-               22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52]
+BILI_HOME = "https://www.bilibili.com/"
+BILI_NAV_API = "https://api.bilibili.com/x/web-interface/nav"
+BILI_DYNAMIC_API = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space"
+BILI_USER_API = "https://api.bilibili.com/x/space/wbi/acc/info"
 
-_WBI_MIXIN = None
+MIXIN_TABLE = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52]
+FALLBACK_MIXIN = "ea1db124af3c7062474693fa704f4ff8"
+
+cookie_jar = http.cookiejar.CookieJar()
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+opener.addheaders = [("User-Agent", USER_AGENT)]
+urllib.request.install_opener(opener)
 # ==============================================
 
 
-def fetch_wbi_mixin():
-    """获取 WBI 混淆密钥（仅获取一次）"""
-    global _WBI_MIXIN
-    if _WBI_MIXIN:
-        return _WBI_MIXIN
-    url = "https://api.bilibili.com/x/web-interface/nav"
-    req = urllib.request.Request(url, headers={
-        "User-Agent": USER_AGENT,
-        "Cookie": BILI_COOKIE,
-    })
+def fetch(url, referer=None, timeout=15):
+    """HTTP GET，带 Cookie 和 Referer"""
+    headers = {}
+    if referer:
+        headers["Referer"] = referer
+    req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        wbi = data["data"]["wbi_img"]
-        raw = wbi["img_url"].split("/")[-1].split(".")[0] + wbi["sub_url"].split("/")[-1].split(".")[0]
-        _WBI_MIXIN = "".join(raw[MIXIN_TABLE[i]] for i in range(32))
-        print(f"WBI 密钥获取成功")
-        return _WBI_MIXIN
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        log.error(f"HTTP {e.code}: {e.reason}")
+        return None
     except Exception as e:
-        print(f"获取 WBI 密钥失败: {e}")
+        log.error(f"请求失败: {e}")
         return None
 
 
-def sign_params(params, mixin):
-    """对参数做 WBI 签名"""
+def init_session():
+    """访问 B站首页获取 Cookie"""
+    log.info("初始化 B站 Session...")
+    data = fetch(BILI_HOME, timeout=15)
+    if data is None:
+        c = [f"{c.name}={c.value}" for c in cookie_jar]
+        log.info(f"Cookie 已获取: {c}")
+    return True
+
+
+_wbi_mixin = None
+
+
+def get_mixin_key():
+    """获取 WBI mixin key（带缓存和降级）"""
+    global _wbi_mixin
+    if _wbi_mixin:
+        return _wbi_mixin
+
+    data = fetch(BILI_NAV_API, referer=BILI_HOME)
+    if not data:
+        log.warning("获取 WBI 密钥失败，使用降级 key")
+        _wbi_mixin = FALLBACK_MIXIN
+        return _wbi_mixin
+
+    wbi = data.get("data", {}).get("wbi_img", {})
+    img = wbi.get("img_url", "")
+    sub = wbi.get("sub_url", "")
+    if not img or not sub:
+        _wbi_mixin = FALLBACK_MIXIN
+        return _wbi_mixin
+
+    raw = img.rsplit("/", 1)[-1].split(".")[0] + sub.rsplit("/", 1)[-1].split(".")[0]
+    _wbi_mixin = "".join(raw[MIXIN_TABLE[i]] for i in range(64))[:32]
+    log.info(f"WBI mixin key 已就绪")
+    return _wbi_mixin
+
+
+def sign_params(params):
+    """WBI 签名（v2）- 值需 URL 编码"""
+    mixin = get_mixin_key()
+    params["wts"] = str(int(time.time()))
     sorted_keys = sorted(params.keys())
-    query = "&".join(f"{k}={params[k]}" for k in sorted_keys)
+    query = "&".join(f"{k}={urllib.parse.quote(str(params[k]), safe='')}" for k in sorted_keys)
     params["w_rid"] = hashlib.md5((query + mixin).encode()).hexdigest()
-    params["wts"] = int(time.time())
     return params
 
 
-def http_get(url, extra_headers=None):
-    """统一的 HTTP GET 请求"""
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Referer": "https://www.bilibili.com/",
-        "Cookie": BILI_COOKIE,
-    }
-    if extra_headers:
-        headers.update(extra_headers)
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        print(f"HTTP {e.code}: {e.reason}")
-        return None
-    except Exception as e:
-        print(f"请求失败: {e}")
-        return None
+def get_user_dynamics(uid, max_retries=2):
+    """获取 UP 主最新动态"""
+    global _wbi_mixin
+    for attempt in range(max_retries):
+        params = sign_params({"host_mid": uid})
+        url = BILI_DYNAMIC_API + "?" + urllib.parse.urlencode(params)
+        data = fetch(url, referer=f"https://space.bilibili.com/{uid}/dynamic")
+
+        if data is None:
+            time.sleep(3)
+            continue
+
+        code = data.get("code")
+        if code == 0:
+            return data.get("data", {}).get("items", [])
+
+        if code == -352:  # WBI 签名过期
+            log.warning("WBI 签名失效，刷新后重试")
+            _wbi_mixin = None
+            continue
+
+        log.error(f"API code={code}, msg={data.get('message')}")
+        return []
+
+    log.error("重试耗尽，获取动态失败")
+    return []
 
 
-def get_user_info(uid):
+def get_user_name(uid):
     """获取 UP 主名称"""
-    mixin = fetch_wbi_mixin()
-    if not mixin:
-        return {"name": f"UID:{uid}"}
-    params = sign_params({"mid": uid}, mixin)
-    url = "https://api.bilibili.com/x/space/wbi/acc/info?" + urllib.parse.urlencode(params)
-    data = http_get(url, {"Referer": f"https://space.bilibili.com/{uid}/"})
+    global _wbi_mixin
+    params = sign_params({"mid": uid})
+    url = BILI_USER_API + "?" + urllib.parse.urlencode(params)
+    data = fetch(url, referer=f"https://space.bilibili.com/{uid}/")
     if data and data.get("code") == 0:
-        return {"name": data["data"]["name"]}
-    return {"name": f"UID:{uid}"}
+        return data["data"]["name"]
+    return f"UID:{uid}"
 
 
-def get_user_dynamics(uid):
-    """获取 UP 主最新动态（polymer feed API，需 Cookie + WBI）"""
-    mixin = fetch_wbi_mixin()
-    if not mixin:
-        print("无法获取 WBI 密钥，跳过")
-        return []
-
-    params = sign_params({
-        "host_mid": uid,
-        "platform": "web",
-        "web_location": "333.1387",
-        "features": "itemOpusStyle,listOnlyfans,opusBigCover,forwardListHidden",
-    }, mixin)
-
-    url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?" + urllib.parse.urlencode(params)
-    data = http_get(url, {"Referer": f"https://space.bilibili.com/{uid}/dynamic"})
-
-    if not data:
-        return []
-    if data.get("code") != 0:
-        print(f"API code={data.get('code')}, msg={data.get('message')}")
-        return []
-
-    return data.get("data", {}).get("items", [])
-
-
-def extract_dynamic_info(item):
-    """从 polymer feed item 中提取动态信息"""
-    id_str = item.get("id_str", "")
+def extract_dynamic(item):
+    """从 polymer feed item 提取信息"""
+    mid = item.get("id_str", "")
     modules = item.get("modules", {})
     author = modules.get("module_author", {})
-    author_name = author.get("name", "未知")
-    pub_ts = author.get("pub_ts", 0)
+    name = author.get("name", "未知")
 
     dyn = modules.get("module_dynamic", {})
     major = dyn.get("major", {})
-    dyn_type = major.get("type", "")
-    text = dyn.get("desc", {}).get("text", "")
+    desc = dyn.get("desc", {})
+    text = desc.get("text", "")
+    dyn_type = item.get("type", "")
 
-    parts = [text] if text else []
-    pic_urls = []
+    # WORD 类型 desc.text 可能为空，从 opus.summary.text 补充
+    if not text:
+        opus = major.get("opus", {})
+        text = opus.get("summary", {}).get("text", "")
 
-    if dyn_type == "MAJOR_TYPE_ARCHIVE":
-        a = major.get("archive", {})
-        t = a.get("title", "")
-        if t:
-            parts.append(f"\n[视频] {t}")
-    elif dyn_type == "MAJOR_TYPE_DRAW":
+    pics = []
+    if dyn_type == "DYNAMIC_TYPE_DRAW":
         for it in major.get("draw", {}).get("items", []):
             s = it.get("src", "")
             if s:
-                pic_urls.append(s)
-    elif dyn_type == "MAJOR_TYPE_ARTICLE":
-        a = major.get("article", {})
-        t = a.get("title", "")
-        if t:
-            parts.append(f"\n[专栏] {t}")
-    elif dyn_type == "MAJOR_TYPE_OPUS":
-        opus = major.get("opus", {})
-        s = opus.get("summary", {}).get("text", "")
-        if s:
-            parts.append(s)
-        for p in opus.get("pics", []):
+                pics.append(s)
+    elif dyn_type == "DYNAMIC_TYPE_WORD":
+        for p in major.get("opus", {}).get("pics", []):
             u = p.get("url", "")
             if u:
-                pic_urls.append(u)
-    elif dyn_type == "MAJOR_TYPE_LIVE_RCMD":
-        parts.append("\n[直播] UP 主正在直播!")
-    elif dyn_type == "MAJOR_TYPE_NONE":
-        topic = modules.get("module_topic", {}).get("name", "")
-        if topic:
-            parts.append(f"\n[话题] {topic}")
+                pics.append(u)
 
+    pub_ts = author.get("pub_ts", 0)
     pub_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(pub_ts)) if pub_ts else ""
 
     return {
-        "id": id_str,
-        "author": author_name,
-        "text": "\n".join(parts) if parts.strip() else "(无内容)",
+        "id": mid,
+        "author": name,
+        "text": text or "(无内容)",
         "time": pub_time,
-        "timestamp": pub_ts,
-        "type": dyn_type.replace("MAJOR_TYPE_", ""),
-        "pics": pic_urls,
+        "type": dyn_type,
+        "pics": pics,
     }
 
 
@@ -203,75 +197,56 @@ def save_state(state):
 
 def send_serverchan(title, content):
     if not SENDKEY:
-        print("未设置 SERVERCHAN_SENDKEY")
         return False
     import re
     m = re.match(r"^sctp(\d+)t", SENDKEY)
     if not m:
-        print("SendKey 格式不正确 (应为 sctp...t...)")
+        log.error("SendKey 格式不正确")
         return False
     url = f"https://{m.group(1)}.push.ft07.com/send/{SENDKEY}.send?" + urllib.parse.urlencode({"title": title, "desp": content})
-    data = http_get(url)
-    if data:
-        if data.get("code") == 0:
-            print(f"Server酱3 推送成功: {title}")
-            return True
-        print(f"Server酱3 推送失败: {data.get('message')}")
+    data = fetch(url)
+    if data and data.get("code") == 0:
+        log.info(f"推送成功: {title}")
+        return True
+    log.error(f"推送失败")
     return False
 
 
-def format_push_content(dyn):
-    link = f"https://t.bilibili.com/{dyn['id']}"
-    pics = "".join(f"\n![图片]({u})" for u in dyn.get("pics", []))
-    return f"""### {dyn['author']} 发布了新动态
-
-**时间**: {dyn['time']}
-**类型**: {dyn['type']}
-
----
-
-{dyn['text']}
-{pics}
-
----
-
-[查看原动态]({link})
-"""
-
-
 def main():
-    print("=== B站动态监控 (Server酱3) ===")
+    log.info("=== B站动态监控 / Server酱3 ===")
     if not UID_LIST:
-        print("未设置 BILI_UID")
-        return
+        log.error("未设置 BILI_UID")
+        sys.exit(1)
 
-    print(f"Cookie: {'已设置' if BILI_COOKIE != 'buvid3=infoc;' else '仅 buvid3（部分 API 可能受限）'}")
-    print(f"监控 {len(UID_LIST)} 个 UP 主: {', '.join(UID_LIST)}")
+    # 1. 初始化 Session（访问首页拿 Cookie）
+    init_session()
 
-    # 预加载 WBI 密钥
-    fetch_wbi_mixin()
+    # 2. 预获取 WBI 密钥
+    get_mixin_key()
+
     state = load_state()
+    log.info(f"监控 {len(UID_LIST)} 个 UP 主")
 
     for idx, uid in enumerate(UID_LIST):
-        print(f"\n--- [{idx+1}/{len(UID_LIST)}] UID: {uid} ---")
+        log.info(f"[{idx+1}/{len(UID_LIST)}] UID: {uid}")
 
-        name = NAME_LIST[idx] if idx < len(NAME_LIST) and NAME_LIST[idx] else get_user_info(uid).get("name", f"UID:{uid}")
-        print(f"UP 主: {name}")
+        name = NAME_LIST[idx] if idx < len(NAME_LIST) and NAME_LIST[idx] else get_user_name(uid)
+        log.info(f"  UP 主: {name}")
 
         last_id = state["last_dynamic_ids"].get(uid, "")
         time.sleep(REQUEST_INTERVAL)
 
         items = get_user_dynamics(uid)
         if not items:
-            print("未获取到动态数据（可能需要有效的 BILI_COOKIE）")
+            log.info("  未获取到动态")
             continue
 
-        print(f"获取到 {len(items)} 条动态")
+        log.info(f"  获取到 {len(items)} 条动态")
         new_dynamics = []
         latest_id = last_id
 
         for item in items:
-            info = extract_dynamic_info(item)
+            info = extract_dynamic(item)
             if not info["id"]:
                 continue
             if info["id"] > latest_id:
@@ -280,20 +255,23 @@ def main():
                 new_dynamics.append(info)
 
         if not last_id:
-            print(f"首次运行，记录最新 ID: {latest_id}（不推送）")
+            log.info(f"  首次运行，记录 ID: {latest_id}（不推送）")
         elif new_dynamics:
-            print(f"发现 {len(new_dynamics)} 条新动态!")
+            log.info(f"  发现 {len(new_dynamics)} 条新动态!")
             for dyn in new_dynamics:
-                send_serverchan(f"{dyn['author']} 有新动态!", format_push_content(dyn))
+                link = f"https://t.bilibili.com/{dyn['id']}"
+                pics = "".join(f"\n![图片]({u})" for u in dyn["pics"])
+                content = f"### {dyn['author']} 发布了新动态\n\n**时间**: {dyn['time']}\n**类型**: {dyn['type']}\n\n---\n\n{dyn['text']}{pics}\n\n---\n\n[查看原动态]({link})"
+                send_serverchan(f"{dyn['author']} 有新动态!", content)
                 time.sleep(1)
         else:
-            print("没有新动态")
+            log.info("  没有新动态")
 
         state["last_dynamic_ids"][uid] = latest_id
 
     state["last_check_time"] = int(time.time())
     save_state(state)
-    print(f"\n=== 本轮完成 ===")
+    log.info("=== 本轮完成 ===")
 
 
 if __name__ == "__main__":
