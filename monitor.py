@@ -11,11 +11,12 @@ import urllib.request
 import urllib.parse
 
 # ==================== 配置 ====================
-# UP 主 UID（从 GitHub Secrets 读取）
-UID = os.getenv("BILI_UID", "")
+# UP 主 UID，多个用英文逗号分隔（从 GitHub Secrets 读取）
+# 示例：BILI_UID = "123,456,789"
+UID_LIST = [u.strip() for u in os.getenv("BILI_UID", "").split(",") if u.strip()]
 
-# UP 主名称（可选，留空自动从 B站 API 获取）
-UP_NAME = os.getenv("BILI_UP_NAME", "")
+# UP 主名称，多个用英文逗号分隔（可选，留空自动获取）
+NAME_LIST = [n.strip() for n in os.getenv("BILI_UP_NAME", "").split(",") if n.strip()]
 
 # Server酱 Turbo SendKey（从 GitHub Secrets 读取）
 SENDKEY = os.getenv("SERVERCHAN_SENDKEY", "")
@@ -308,71 +309,89 @@ def format_push_content(dynamic_info):
     return content
 
 
+def get_user_name_cache(uid, idx):
+    """获取 UP 主名称，优先用配置的 NAME_LIST，其次调 API"""
+    if idx < len(NAME_LIST) and NAME_LIST[idx]:
+        return NAME_LIST[idx]
+    try:
+        info = get_user_info(uid)
+        return info.get("name", f"UID:{uid}")
+    except:
+        return f"UID:{uid}"
+
+
 def main():
     print(f"=== B站动态监控 (Server酱 Turbo) ===")
-    print(f"目标 UID: {UID}")
 
-    # 获取 UP 主名称
-    user_info = get_user_info(UID)
-    up_name = UP_NAME or user_info.get("name", f"UID:{UID}")
-    print(f"UP 主: {up_name}")
+    if not UID_LIST:
+        print("❌ 未设置 BILI_UID，请在 GitHub Secrets 中配置（多个用英文逗号分隔）")
+        print("   示例: BILI_UID = 123,456,789")
+        return
+
+    print(f"监控 {len(UID_LIST)} 个 UP 主: {', '.join(UID_LIST)}")
 
     # 加载状态
     state = load_state()
-    last_id = state["last_dynamic_ids"].get(UID, "")
-    print(f"上次记录动态 ID: {last_id}")
 
-    # 获取最新动态
-    time.sleep(REQUEST_INTERVAL)
-    items, has_more = get_user_dynamics(UID)
+    for idx, uid in enumerate(UID_LIST):
+        print(f"\n--- [{idx+1}/{len(UID_LIST)}] UID: {uid} ---")
 
-    if not items:
-        print("未获取到动态数据，可能被限流或接口异常")
-        return
+        # 获取 UP 主名称
+        up_name = get_user_name_cache(uid, idx)
+        print(f"UP 主: {up_name}")
 
-    print(f"获取到 {len(items)} 条动态")
+        last_id = state["last_dynamic_ids"].get(uid, "")
+        print(f"上次记录动态 ID: {last_id}")
 
-    # 找出新动态（ID 大于上次记录的）
-    new_dynamics = []
-    latest_id = last_id
+        # 获取最新动态
+        time.sleep(REQUEST_INTERVAL)
+        items, has_more = get_user_dynamics(uid)
 
-    for item in items:
-        info = extract_dynamic_info(item)
-        if not info["id"]:
+        if not items:
+            print("未获取到动态数据，可能被限流或接口异常")
             continue
 
-        # 更新最新 ID
-        if info["id"] > latest_id:
-            latest_id = info["id"]
+        print(f"获取到 {len(items)} 条动态")
 
-        # 如果是第一次运行（没有历史记录），只记录不推送
+        # 找出新动态
+        new_dynamics = []
+        latest_id = last_id
+
+        for item in items:
+            info = extract_dynamic_info(item)
+            if not info["id"]:
+                continue
+
+            if info["id"] > latest_id:
+                latest_id = info["id"]
+
+            if not last_id:
+                continue
+
+            if info["id"] > last_id:
+                new_dynamics.append(info)
+
+        # 推送新动态
         if not last_id:
-            continue
+            print(f"首次运行，记录最新动态 ID: {latest_id}（不推送）")
+        elif new_dynamics:
+            print(f"发现 {len(new_dynamics)} 条新动态！")
+            for dyn in new_dynamics:
+                title = f"{dyn['author']} 有新动态！"
+                content = format_push_content(dyn)
+                success = send_serverchan(title, content)
+                if not success:
+                    print(f"推送失败: {dyn['id']}")
+                time.sleep(1)
+        else:
+            print("没有新动态")
 
-        # 动态 ID 大于上次记录的，视为新动态
-        if info["id"] > last_id:
-            new_dynamics.append(info)
+        # 更新状态
+        state["last_dynamic_ids"][uid] = latest_id
 
-    # 推送新动态
-    if not last_id:
-        print(f"首次运行，记录最新动态 ID: {latest_id}（不推送，避免刷屏）")
-    elif new_dynamics:
-        print(f"\n发现 {len(new_dynamics)} 条新动态！")
-        for dyn in new_dynamics:
-            title = f"{dyn['author']} 有新动态！"
-            content = format_push_content(dyn)
-            success = send_serverchan(title, content)
-            if not success:
-                print(f"推送失败: {dyn['id']}")
-            time.sleep(1)  # 推送间隔
-    else:
-        print("没有新动态")
-
-    # 更新状态
-    state["last_dynamic_ids"][UID] = latest_id
     state["last_check_time"] = int(time.time())
     save_state(state)
-    print(f"状态已更新: last_dynamic_id = {latest_id}")
+    print(f"\n=== 本轮检查完成 ===")
 
 
 if __name__ == "__main__":
