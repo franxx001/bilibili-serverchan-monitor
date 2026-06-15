@@ -144,9 +144,9 @@ def extract_dynamic(item):
     author = modules.get("module_author", {})
     name = author.get("name", "未知")
 
-    dyn = modules.get("module_dynamic", {})
-    major = dyn.get("major", {})
-    desc = dyn.get("desc", {})
+    dyn = modules.get("module_dynamic") or {}
+    major = dyn.get("major") or {}
+    desc = dyn.get("desc") or {}
     text = desc.get("text", "")
     dyn_type = item.get("type", "")
 
