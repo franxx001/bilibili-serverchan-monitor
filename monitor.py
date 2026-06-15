@@ -168,6 +168,8 @@ def extract_dynamic(item):
                 pics.append(u)
 
     pub_ts = author.get("pub_ts", 0)
+    if pub_ts and isinstance(pub_ts, str):
+        pub_ts = int(pub_ts)
     pub_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(pub_ts)) if pub_ts else ""
 
     return {
