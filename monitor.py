@@ -116,29 +116,9 @@ def get_user_info(uid):
     return {"name": f"UID:{uid}"}
 
 
-def get_user_dynamics(uid, offset_dynamic_id="0"):
-    """获取 UP 主的空间动态列表（最新一页）"""
-    mixin_key_raw = get_wbi_keys()
-    if not mixin_key_raw:
-        print("未获取到 WBI 密钥，尝试无签名请求")
-
-    if mixin_key_raw:
-        key_len = len(mixin_key_raw)
-        mixin = ""
-        table = mixin_key_table()
-        for i in range(32):
-            if table[i] < key_len:
-                mixin += mixin_key_raw[table[i]]
-
-        params = {
-            "host_mid": uid,
-            "offset_dynamic_id": offset_dynamic_id,
-        }
-        params = wbi_sign(params, mixin)
-        url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?" + urllib.parse.urlencode(params)
-    else:
-        url = f"https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?host_mid={uid}&offset_dynamic_id={offset_dynamic_id}"
-
+def get_user_dynamics(uid):
+    """获取 UP 主的最新动态（使用旧版 API，无需 WBI 签名）"""
+    url = f"https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/space_history?host_uid={uid}&offset_dynamic_id=0"
     req = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT,
         "Referer": f"https://space.bilibili.com/{uid}/dynamic",
@@ -148,96 +128,83 @@ def get_user_dynamics(uid, offset_dynamic_id="0"):
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         if data.get("code") == 0:
-            items = data.get("data", {}).get("items", [])
-            has_more = data.get("data", {}).get("has_more", False)
-            return items, has_more
+            cards = data.get("data", {}).get("cards", [])
+            return cards
         else:
-            print(f"API 返回异常: {data}")
-            return [], False
+            print(f"API 返回异常: code={data.get('code')}, msg={data.get('message')}")
+            return []
     except Exception as e:
         print(f"获取动态失败: {e}")
-        return [], False
+        return []
 
 
-def extract_dynamic_info(item):
-    """从动态 item 中提取信息"""
-    id_str = item.get("id_str", "")
-    modules = item.get("modules", {})
-    
-    # 作者信息
-    author = modules.get("module_author", {})
-    author_name = author.get("name", "未知")
-    
-    # 动态内容
-    dynamic = modules.get("module_dynamic", {})
-    major = dynamic.get("major", {})
-    desc = dynamic.get("desc", {})
-    text = desc.get("text", "")
-    
-    dynamic_type = major.get("type", "")
-    
-    # 根据类型提取内容
-    content_parts = [text] if text else []
-    
-    if dynamic_type == "MAJOR_TYPE_ARCHIVE":
-        archive = major.get("archive", {})
-        title = archive.get("title", "")
-        cover = archive.get("cover", "")
-        if title:
-            content_parts.append(f"\n[视频] {title}")
-        if cover:
-            content_parts.append(f"\n![封面]({cover})")
+def extract_dynamic_info(card):
+    """从动态 card 中提取信息（space_history 格式）"""
+    desc = card.get("desc", {})
+    dynamic_id = str(desc.get("dynamic_id_str") or desc.get("dynamic_id", ""))
+    timestamp = desc.get("timestamp", 0)
+    uname = "未知"
+    user_profile = desc.get("user_profile", {})
+    if user_profile:
+        uname = user_profile.get("info", {}).get("uname", "未知")
 
-    elif dynamic_type == "MAJOR_TYPE_ARTICLE":
-        article = major.get("article", {})
-        article_title = article.get("title", "")
-        covers = article.get("covers", [])
-        if article_title:
-            content_parts.append(f"\n[专栏] {article_title}")
-        for c in covers:
-            content_parts.append(f"\n![图片]({c})")
+    # 解析动态类型
+    card_type = desc.get("type", 0)
+    type_names = {
+        1: "转发", 2: "图文", 4: "纯文字", 8: "视频投稿",
+        16: "小视频", 64: "专栏", 256: "音频",
+        512: "直播", 2048: "直播", 4200: "直播预约",
+    }
+    dynamic_type = type_names.get(card_type, f"未知类型({card_type})")
 
-    elif dynamic_type == "MAJOR_TYPE_DRAW":
-        draw = major.get("draw", {})
-        items_list = draw.get("items", [])
-        for it in items_list:
-            src = it.get("src", "")
+    # 解析 card JSON 内容
+    text_content = ""
+    pic_urls = []
+    try:
+        card_json = json.loads(card.get("card", "{}"))
+        item = card_json.get("item", {})
+
+        # 文字内容
+        text_content = item.get("description", "") or item.get("content", "") or ""
+        if not text_content:
+            # 转发动态取 origin 的内容
+            origin = card_json.get("origin", "")
+            if origin:
+                try:
+                    origin_json = json.loads(origin) if isinstance(origin, str) else origin
+                    text_content = origin_json.get("item", {}).get("description", "") or "（转发动态）"
+                except:
+                    text_content = "（转发动态）"
+
+        # 图片
+        pictures = item.get("pictures", [])
+        for p in pictures:
+            src = p.get("img_src", "")
             if src:
-                content_parts.append(f"\n![图片]({src})")
+                pic_urls.append(src)
 
-    elif dynamic_type == "MAJOR_TYPE_LIVE_RCMD":
-        content_parts.append("\n[直播] UP 主正在直播！")
+        # 视频标题
+        title = item.get("title", "") or card_json.get("title", "")
+        if title and card_type in (8, 16):
+            text_content = f"[视频] {title}\n{text_content}"
 
-    elif dynamic_type == "MAJOR_TYPE_OPUS":
-        opus = major.get("opus", {})
-        summary = opus.get("summary", {}).get("text", "")
-        pics = opus.get("pics", [])
-        if summary:
-            content_parts.append(summary)
-        for p in pics:
-            src = p.get("url", "")
-            if src:
-                content_parts.append(f"\n![图片]({src})")
+        # 专栏标题
+        if title and card_type == 64:
+            text_content = f"[专栏] {title}\n{text_content}"
 
-    # 转发中的原始动态
-    if dynamic_type == "MAJOR_TYPE_NONE":
-        topic = modules.get("module_topic")
-        if topic:
-            topic_name = topic.get("name", "")
-            if topic_name:
-                content_parts.append(f"\n[话题] {topic_name}")
+    except Exception as e:
+        text_content = f"(解析失败: {e})"
 
-    # 发布时间
-    pub_ts = author.get("pub_ts", 0)
-    pub_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(pub_ts)) if pub_ts else ""
+    pub_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp)) if timestamp else ""
 
     return {
-        "id": id_str,
-        "author": author_name,
-        "text": "\n".join(content_parts) if content_parts else "(无内容)",
+        "id": dynamic_id,
+        "author": uname,
+        "text": text_content or "(无内容)",
         "time": pub_time,
-        "timestamp": pub_ts,
+        "timestamp": timestamp,
         "type": dynamic_type,
+        "pics": pic_urls,
     }
 
 
@@ -303,7 +270,12 @@ def send_serverchan(title, content):
 def format_push_content(dynamic_info):
     """格式化推送内容为 Markdown"""
     link = f"https://t.bilibili.com/{dynamic_info['id']}"
-    
+
+    # 图片
+    pics_md = ""
+    for url in dynamic_info.get("pics", []):
+        pics_md += f"\n![图片]({url})"
+
     content = f"""### {dynamic_info['author']} 发布了新动态
 
 **时间**: {dynamic_info['time']}
@@ -312,6 +284,7 @@ def format_push_content(dynamic_info):
 ---
 
 {dynamic_info['text']}
+{pics_md}
 
 ---
 
@@ -354,22 +327,22 @@ def main():
         last_id = state["last_dynamic_ids"].get(uid, "")
         print(f"上次记录动态 ID: {last_id}")
 
-        # 获取最新动态
+        # 获取最新动态（旧版 API，稳定无需 WBI）
         time.sleep(REQUEST_INTERVAL)
-        items, has_more = get_user_dynamics(uid)
+        cards = get_user_dynamics(uid)
 
-        if not items:
+        if not cards:
             print("未获取到动态数据，可能被限流或接口异常")
             continue
 
-        print(f"获取到 {len(items)} 条动态")
+        print(f"获取到 {len(cards)} 条动态")
 
         # 找出新动态
         new_dynamics = []
         latest_id = last_id
 
-        for item in items:
-            info = extract_dynamic_info(item)
+        for card in cards:
+            info = extract_dynamic_info(card)
             if not info["id"]:
                 continue
 
